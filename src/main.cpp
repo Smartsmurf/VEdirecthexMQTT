@@ -1,22 +1,29 @@
 //
-// This is part of the FelicityBMS2MQTT project
+// This is part of the VEdirecthexMQTT project
 //
-// https://github.com/Smartsmurf/FelicityBMS2MQTT
+// https://github.com/Smartsmurf/VEdirecthexMQTT
 // 
+// VE.Direct <-> MQTT bridge
+// - Reads VE.Direct (UART) in text mode
+// - Publishes keys (+ JSON snapshots) to MQTT
+// - Subscribes to control topics and writes RAM data (SoC, Temp, Current, Voltage) to VE.Direct using Hex frames
+// - Uses FreeRTOS tasks, a serial mutex, and an MQTT publish queue
+  
 // 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
 #include <Preferences.h>
+#include <WebServer.h>
+// #include <ESPAsyncWebServer.h>
+// #include <WebSerial.h>
 
-#include "felicity.h"
+//#include "felicity.h"
 #include "html.h"
 #include "main.h"
 #include "mqtt.h"
+#include "vedirect.h"
 #include "preferences.h"
 
-FelicityBMS * bms;
-QueueHandle_t bmsQueue;
 unsigned long lastWifiCheck = 0;
 
 void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info){
@@ -53,11 +60,16 @@ void setup() {
 
 //      xTaskCreatePinnedToCore(FelicityBMS::bmsTaskWrapper, "BMS", 4096, bms, 1, NULL, 1);
 //      xTaskCreatePinnedToCore(mqtt_task, "MQTT", 4096, NULL, 1, NULL, 1);
-      VE_SERIAL.begin(VE_BAUD, SERIAL_8N1, VE_RX_PIN, VE_TX_PIN);
 
-      connectWiFi();
-      mqtt.setServer(mqtt_server, 1883);
-      mqtt.setCallback(mqttCallback);
+    Serial.begin(115200); delay(100); Serial.println("VE.Direct <-> MQTT bridge starting...");
+    Serial2.begin(VE_BAUD,SERIAL_8N1,VE_RX_PIN,VE_TX_PIN);
+    mqttPublishQueue=xQueueCreate(PUB_QUEUE_LEN,sizeof(MqttMessage));
+    vedirectWriteQueue=xQueueCreate(8,256);
+    serialMutex=xSemaphoreCreateMutex();
+
+
+    xTaskCreatePinnedToCore(vedirectTask,"vedirectTask",4096,NULL,2,NULL,1);
+    xTaskCreatePinnedToCore(mqttTask,"mqttTask",8192,NULL,1,NULL,0);
 
       Serial.println("System started.");
 
@@ -92,8 +104,7 @@ void loop() {
   server.handleClient();
 
   if (!mqtt.connected()) reconnectMQTT();
-  mqtt.loop();
-
-  readVEHexPacket();
+  // mqtt.loop();
+  // readVEHexPacket();
 
 }
